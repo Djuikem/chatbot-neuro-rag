@@ -16,17 +16,6 @@ chatbot-neuro-rag/
 │   └── corpus_neurologie.json   # À ajouter toi-même (voir ci-dessous)
 ```
 
-## ⚠️ Étape manquante avant de pousser sur GitHub
-
-Le fichier `data/corpus_neurologie.json` (ton corpus scrapé, 19 pathologies)
-n'est PAS inclus ici — il est sur ton Google Drive, généré depuis Colab.
-
-**Avant de push :**
-1. Télécharge `corpus_neurologie.json` depuis ton Drive (ou reprends-le depuis
-   la cellule Colab : `files.download(chemin_corpus)`)
-2. Place-le dans le dossier `data/` de ce projet, à la racine, sous le nom exact
-   `corpus_neurologie.json`
-
 ## Déploiement sur Streamlit Community Cloud
 
 1. Pousse tout ce dossier sur un dépôt GitHub public

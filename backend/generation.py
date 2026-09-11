@@ -4,6 +4,7 @@ garde-fou éthique) et appel au LLM via l'API Groq.
 """
 
 import os
+import re
 from groq import Groq
 
 client_groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
@@ -52,6 +53,24 @@ def construire_prompt(question, chunks_retrouves, langue="fr"):
 {textes['reponse_label']}:"""
 
 
+def lier_citations_sources(texte_reponse, chunks_retrouves):
+    """Remplace chaque mention 'Source N' dans le texte généré par un lien Markdown
+    cliquable vers la pathologie correspondante (ex: 'Source 3' -> '[Source 3](url)').
+    L'ordre des chunks_retrouves correspond à la numérotation utilisée dans le prompt
+    (Source 1 = chunks_retrouves[0], etc.)."""
+
+    def remplacer(match):
+        numero = int(match.group(1))
+        index = numero - 1
+        if 0 <= index < len(chunks_retrouves):
+            url = chunks_retrouves[index]["source_url"]
+            return f"[Source {numero}]({url})"
+        return match.group(0)  # numéro hors limites, on laisse le texte inchangé
+
+    # Capture "Source 3", "[Source 3]", "(Source 3)" — avec ou sans crochets/parenthèses
+    return re.sub(r"\[?Source\s+(\d+)\]?", remplacer, texte_reponse)
+
+
 def generer_reponse(question, pipeline, langue="fr", k=5, max_tokens=800, temperature=0.3):
     """Pipeline complet : retrieval + génération. Retourne la réponse texte
     et la liste des pathologies utilisées comme sources.
@@ -67,18 +86,18 @@ def generer_reponse(question, pipeline, langue="fr", k=5, max_tokens=800, temper
         temperature=temperature
     )
 
+    texte_reponse = lier_citations_sources(reponse.choices[0].message.content, chunks_retrouves)
+
     pathologies_utilisees = list(set(c["pathologie"] for c in chunks_retrouves))
 
-    # On associe chaque pathologie à son URL source (une seule URL par pathologie,
-    # même si plusieurs chunks de cette pathologie ont été utilisés)
     sources_uniques = {}
     for c in chunks_retrouves:
         if c["pathologie"] not in sources_uniques:
             sources_uniques[c["pathologie"]] = c["source_url"]
 
     return {
-        "reponse": reponse.choices[0].message.content,
+        "reponse": texte_reponse,
         "pathologies": pathologies_utilisees,
-        "sources_urls": sources_uniques,  # {"Migraine": "https://...", ...}
+        "sources_urls": sources_uniques,
         "sources_detaillees": [(c["pathologie"], c["section"]) for c in chunks_retrouves]
     }

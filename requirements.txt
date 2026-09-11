@@ -1,0 +1,6 @@
+streamlit
+sentence-transformers
+faiss-cpu
+rank_bm25
+groq
+numpy

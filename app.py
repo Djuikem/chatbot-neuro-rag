@@ -10,7 +10,7 @@ TEXTES_INTERFACE = {
         "sous_titre": "Assistant d'information santé — ne remplace pas l'avis d'un professionnel",
         "placeholder": "Pose ta question sur une pathologie neurologique...",
         "spinner": "Recherche en cours...",
-        "pathologies_label": "Pathologies consultées",
+        "pathologies_label": "Sources consultées",
         "selecteur_label": "🌐 Langue / Language",
     },
     "en": {
@@ -18,7 +18,7 @@ TEXTES_INTERFACE = {
         "sous_titre": "Health information assistant — does not replace professional medical advice",
         "placeholder": "Ask your question about a neurological condition...",
         "spinner": "Searching...",
-        "pathologies_label": "Conditions consulted",
+        "pathologies_label": "Sources consulted",
         "selecteur_label": "🌐 Langue / Language",
     },
 }
@@ -61,9 +61,15 @@ if question := st.chat_input(textes["placeholder"]):
     with st.chat_message("assistant"):
         with st.spinner(textes["spinner"]):
             resultat = generer_reponse(question, pipeline, langue=langue_choisie)
+
+            # Construction des liens cliquables : [Nom de la pathologie](url)
+            liens_sources = ", ".join(
+                f"[{nom}]({url})" for nom, url in resultat["sources_urls"].items()
+            )
+
             texte_final = (
                 resultat["reponse"]
-                + f"\n\n---\n📚 *{textes['pathologies_label']} : {', '.join(resultat['pathologies'])}*"
+                + f"\n\n---\n📚 *{textes['pathologies_label']} : {liens_sources}*"
             )
             st.markdown(texte_final)
 

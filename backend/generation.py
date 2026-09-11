@@ -69,8 +69,16 @@ def generer_reponse(question, pipeline, langue="fr", k=5, max_tokens=800, temper
 
     pathologies_utilisees = list(set(c["pathologie"] for c in chunks_retrouves))
 
+    # On associe chaque pathologie à son URL source (une seule URL par pathologie,
+    # même si plusieurs chunks de cette pathologie ont été utilisés)
+    sources_uniques = {}
+    for c in chunks_retrouves:
+        if c["pathologie"] not in sources_uniques:
+            sources_uniques[c["pathologie"]] = c["source_url"]
+
     return {
         "reponse": reponse.choices[0].message.content,
         "pathologies": pathologies_utilisees,
+        "sources_urls": sources_uniques,  # {"Migraine": "https://...", ...}
         "sources_detaillees": [(c["pathologie"], c["section"]) for c in chunks_retrouves]
     }

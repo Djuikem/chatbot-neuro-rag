@@ -91,7 +91,11 @@ with st.sidebar:
 
     textes_bouton = TEXTES_INTERFACE[langue_choisie]
     if st.button(textes_bouton["vider_historique"], use_container_width=True):
-        st.session_state.messages = []
+        # On ne vide que l'historique de la langue actuellement affichée,
+        # l'historique de l'autre langue reste intact
+        st.session_state.messages = [
+            m for m in st.session_state.get("messages", []) if m.get("langue") != langue_choisie
+        ]
         st.rerun()
 
 textes = TEXTES_INTERFACE[langue_choisie]
@@ -99,26 +103,22 @@ textes = TEXTES_INTERFACE[langue_choisie]
 st.title(textes["titre"])
 st.caption(textes["sous_titre"])
 
-# --- Historique persistant, PAS réinitialisé au changement de langue ---
+# --- Historique complet en mémoire (les deux langues), mais on n'affiche
+# que les messages correspondant à la langue actuellement sélectionnée ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for msg in st.session_state.messages:
+messages_a_afficher = [m for m in st.session_state.messages if m.get("langue") == langue_choisie]
+
+for msg in messages_a_afficher:
     with st.chat_message(msg["role"]):
-        # Petit badge discret indiquant la langue dans laquelle ce message a été échangé,
-        # utile puisque l'historique peut désormais mélanger français et anglais.
-        st.markdown(
-            f"<span class='badge-langue'>{msg.get('drapeau', '')}</span>",
-            unsafe_allow_html=True,
-        )
         st.markdown(msg["content"])
 
 if question := st.chat_input(textes["placeholder"]):
     st.session_state.messages.append({
-        "role": "user", "content": question, "drapeau": textes["drapeau"]
+        "role": "user", "content": question, "langue": langue_choisie
     })
     with st.chat_message("user"):
-        st.markdown(f"<span class='badge-langue'>{textes['drapeau']}</span>", unsafe_allow_html=True)
         st.markdown(question)
 
     with st.chat_message("assistant"):
@@ -135,9 +135,8 @@ if question := st.chat_input(textes["placeholder"]):
                 )
                 texte_final += f"\n\n---\n📚 *{textes['pathologies_label']} : {liens_sources}*"
 
-            st.markdown(f"<span class='badge-langue'>{textes['drapeau']}</span>", unsafe_allow_html=True)
             st.markdown(texte_final)
 
     st.session_state.messages.append({
-        "role": "assistant", "content": texte_final, "drapeau": textes["drapeau"]
+        "role": "assistant", "content": texte_final, "langue": langue_choisie
     })

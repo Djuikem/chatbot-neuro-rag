@@ -202,6 +202,35 @@ def corriger_attribution_sources(texte_reponse):
     return texte_corrige
 
 
+MOTIFS_SANS_INFO = {
+    "fr": [
+        r"je ne sais pas",
+        r"aucune (?:des )?sources?\b.{0,25}\bne (?:précise|mentionne|indique|contient)",
+        r"aucune information (?:disponible|pertinente)",
+        r"je ne (?:trouve|dispose) (?:pas|d')",
+        r"\bne (?:précise|mentionne|contient) pas (?:la|le|d')",
+    ],
+    "en": [
+        r"i don't know", r"i do not know",
+        r"no sources?\b.{0,25}\b(?:specifies?|mentions?|contains?|indicates?)",
+        r"no relevant information",
+        r"does not (?:specify|mention|contain)",
+        r"i (?:couldn't|could not) find",
+    ],
+}
+
+
+def reponse_sans_information(texte_reponse, langue="fr"):
+    """Détecte si la réponse du LLM indique en substance qu'il n'a pas trouvé
+    l'information demandée dans les sources (ex: 'je ne sais pas', 'aucune
+    source ne précise...'). Dans ce cas, les sources retrouvées n'ont pas
+    réellement servi à répondre — les afficher comme 'Sources consultées'
+    serait trompeur, puisque ça suggérerait qu'elles contiennent la réponse."""
+    texte_lower = texte_reponse.lower()
+    motifs = MOTIFS_SANS_INFO.get(langue, MOTIFS_SANS_INFO["fr"])
+    return any(re.search(motif, texte_lower) for motif in motifs)
+
+
 MESSAGES_HORS_SUJET = {
     "fr": "Je ne trouve aucune information pertinente sur ce sujet dans ma base de connaissances (spécialisée en neurologie). Pose-moi plutôt une question sur une pathologie neurologique (migraine, épilepsie, Parkinson, Alzheimer, etc.).",
     "en": "I couldn't find any relevant information on this topic in my knowledge base (specialized in neurology). Try asking me about a neurological condition instead (migraine, epilepsy, Parkinson's, Alzheimer's, etc.).",
@@ -279,6 +308,17 @@ def generer_reponse(question, pipeline, historique=None, k=5, max_tokens=800,
 
     texte_reponse = nettoyer_citations_residuelles(reponse.choices[0].message.content)
     texte_reponse = corriger_attribution_sources(texte_reponse)
+
+    # Si la réponse indique qu'aucune information pertinente n'a été trouvée,
+    # les chunks retrouvés n'ont pas réellement servi à répondre — on ne les
+    # affiche pas comme "Sources consultées" pour éviter d'induire en erreur.
+    if reponse_sans_information(texte_reponse, langue=langue):
+        return {
+            "reponse": texte_reponse,
+            "pathologies": [],
+            "sources_urls": {},
+            "sources_detaillees": []
+        }
 
     pathologies_utilisees = list(set(c["pathologie"] for c in chunks_retrouves))
 

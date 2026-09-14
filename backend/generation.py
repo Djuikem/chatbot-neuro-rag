@@ -81,6 +81,15 @@ INSTRUCTIONS_LANGUE = {
             "(ex: \"la migraine peut être traitée par...\"). N'utilise PAS de "
             "notation du type [Source 1] ou (Source 2) — les liens vers les "
             "sources seront affichés séparément après ta réponse.\n\n"
+            "IMPORTANT sur la façon de parler des sources : ces documents "
+            "viennent de TA propre base de connaissances, PAS de l'utilisateur. "
+            "N'écris donc JAMAIS des formulations comme \"les sources que vous "
+            "avez fournies/partagées\" ou \"les documents que vous m'avez donnés\" "
+            "— cela laisse croire à tort que c'est l'utilisateur qui a apporté "
+            "ces informations. Utilise plutôt des formulations comme \"d'après "
+            "les informations disponibles\", \"selon ma base de connaissances\", "
+            "ou simplement \"le traitement de la migraine comprend...\" sans "
+            "mentionner explicitement l'existence de sources dans la phrase.\n\n"
             "Tu peux t'appuyer sur les échanges précédents de la conversation "
             "pour comprendre le contexte d'une question de suivi (ex: si "
             "l'utilisateur a demandé les symptômes de la migraine puis demande "
@@ -104,6 +113,14 @@ INSTRUCTIONS_LANGUE = {
             "\"migraine can be treated with...\"). Do NOT use notation like "
             "[Source 1] or (Source 2) — links to the sources will be displayed "
             "separately after your answer.\n\n"
+            "IMPORTANT about how to refer to the sources: these documents come "
+            "from YOUR OWN knowledge base, NOT from the user. Never write "
+            "phrasings like \"the sources you provided/shared\" or \"the "
+            "documents you gave me\" — this wrongly implies the user supplied "
+            "this information. Instead use phrasings like \"based on the "
+            "available information\", \"according to my knowledge base\", or "
+            "simply state the fact directly (e.g. \"migraine treatment "
+            "includes...\") without mentioning sources explicitly in the sentence.\n\n"
             "You can rely on the previous turns of the conversation to "
             "understand follow-up questions (e.g. if the user asked about "
             "migraine symptoms and then asks 'and treatments?', understand "
@@ -164,6 +181,25 @@ def nettoyer_citations_residuelles(texte_reponse):
     texte_nettoye = re.sub(r"[ \t]{2,}", " ", texte_nettoye)
 
     return texte_nettoye.strip()
+
+
+def corriger_attribution_sources(texte_reponse):
+    """Filet de sécurité : si le LLM dit malgré la consigne que les sources
+    viennent de l'utilisateur ('les sources que vous avez fournies/partagées',
+    'the sources you provided/shared'...), on corrige vers une formulation
+    neutre plutôt que de laisser cette confusion trompeuse dans la réponse."""
+    remplacements = [
+        (r"les (?:sources|documents|informations) que (?:vous|tu) (?:avez|as) (?:fournies?|partagées?|données?|donnés?)",
+         "les informations disponibles"),
+        (r"the sources (?:you|that you) (?:provided|shared|gave me)",
+         "the available information"),
+        (r"the documents (?:you|that you) (?:provided|shared|gave me)",
+         "the available information"),
+    ]
+    texte_corrige = texte_reponse
+    for motif, remplacement in remplacements:
+        texte_corrige = re.sub(motif, remplacement, texte_corrige, flags=re.IGNORECASE)
+    return texte_corrige
 
 
 MESSAGES_HORS_SUJET = {
@@ -242,6 +278,7 @@ def generer_reponse(question, pipeline, historique=None, k=5, max_tokens=800,
     )
 
     texte_reponse = nettoyer_citations_residuelles(reponse.choices[0].message.content)
+    texte_reponse = corriger_attribution_sources(texte_reponse)
 
     pathologies_utilisees = list(set(c["pathologie"] for c in chunks_retrouves))
 

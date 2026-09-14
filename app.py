@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 from backend.pipeline import PipelineRAG
 from backend.generation import generer_reponse
@@ -12,7 +13,6 @@ TEXTES_INTERFACE = {
         "spinner": "Recherche en cours...",
         "pathologies_label": "Sources consultées",
         "vider_historique": "🗑️ Vider l'historique",
-        "drapeau": "🇫🇷",
     },
     "en": {
         "titre": "Neurology Chatbot",
@@ -21,19 +21,18 @@ TEXTES_INTERFACE = {
         "spinner": "Searching...",
         "pathologies_label": "Sources consulted",
         "vider_historique": "🗑️ Clear history",
-        "drapeau": "🇬🇧",
     },
 }
 
-# --- Style personnalisé ---
+# --- Style personnalisé : utilise les variables de thème de Streamlit pour
+# s'adapter automatiquement au mode clair/sombre choisi par l'utilisateur
+# (menu ⋮ en haut à droite -> Settings -> Choose app theme), plutôt que
+# d'imposer des couleurs fixes qui casseraient le mode clair. ---
 st.markdown("""
 <style>
-    .stApp {
-        background: linear-gradient(180deg, #0f1420 0%, #131826 100%);
-    }
     h1 {
         font-weight: 700 !important;
-        background: linear-gradient(90deg, #7C9EFF 0%, #A78BFA 100%);
+        background: linear-gradient(90deg, #6366F1 0%, #A855F7 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         padding-bottom: 0.2rem;
@@ -42,24 +41,8 @@ st.markdown("""
         border-radius: 14px;
         padding: 4px 8px;
     }
-    .stChatMessage:has([data-testid="stChatMessageAvatarUser"]) {
-        background-color: rgba(124, 158, 255, 0.08);
-    }
-    .stChatMessage:has([data-testid="stChatMessageAvatarAssistant"]) {
-        background-color: rgba(167, 139, 250, 0.06);
-    }
-    section[data-testid="stSidebar"] {
-        background-color: #0d111c;
-        border-right: 1px solid rgba(255,255,255,0.06);
-    }
     div[data-baseweb="segmented-control"] {
         margin-top: 0.3rem;
-    }
-    .badge-langue {
-        display: inline-block;
-        font-size: 0.75rem;
-        opacity: 0.55;
-        margin-bottom: 2px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -88,11 +71,10 @@ with st.sidebar:
     langue_choisie = langue_choisie or "fr"
 
     st.divider()
+    st.caption("🎨 Le thème clair/sombre se change dans le menu ⋮ en haut à droite → Settings.")
 
     textes_bouton = TEXTES_INTERFACE[langue_choisie]
     if st.button(textes_bouton["vider_historique"], use_container_width=True):
-        # On ne vide que l'historique de la langue actuellement affichée,
-        # l'historique de l'autre langue reste intact
         st.session_state.messages = [
             m for m in st.session_state.get("messages", []) if m.get("langue") != langue_choisie
         ]
@@ -103,8 +85,6 @@ textes = TEXTES_INTERFACE[langue_choisie]
 st.title(textes["titre"])
 st.caption(textes["sous_titre"])
 
-# --- Historique complet en mémoire (les deux langues), mais on n'affiche
-# que les messages correspondant à la langue actuellement sélectionnée ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -113,6 +93,15 @@ messages_a_afficher = [m for m in st.session_state.messages if m.get("langue") =
 for msg in messages_a_afficher:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
+
+def extraire_contenu_brut(texte_affiche):
+    """Retire la section '---\\n📚 Sources...' du texte affiché, pour ne
+    transmettre que le contenu réellement dit par l'assistant comme mémoire
+    de conversation au LLM (les liens de sources n'apportent rien au contexte
+    conversationnel et alourdiraient inutilement le prompt)."""
+    return re.split(r"\n\n---\n📚", texte_affiche)[0].strip()
+
 
 if question := st.chat_input(textes["placeholder"]):
     st.session_state.messages.append({
@@ -123,12 +112,20 @@ if question := st.chat_input(textes["placeholder"]):
 
     with st.chat_message("assistant"):
         with st.spinner(textes["spinner"]):
-            resultat = generer_reponse(question, pipeline, langue=langue_choisie)
+            # On construit l'historique (mémoire conversationnelle) à partir
+            # des messages déjà affichés dans cette langue, nettoyés des liens
+            # de sources, et sans le message qu'on vient d'ajouter.
+            historique_pour_llm = [
+                {"role": m["role"], "content": extraire_contenu_brut(m["content"])}
+                for m in messages_a_afficher
+            ]
+
+            resultat = generer_reponse(
+                question, pipeline, historique=historique_pour_llm, langue=langue_choisie
+            )
 
             texte_final = resultat["reponse"]
 
-            # On n'ajoute la section "Sources consultées" que s'il y a réellement
-            # des sources (pas pour les réponses hors-sujet, où sources_urls est vide)
             if resultat["sources_urls"]:
                 liens_sources = ", ".join(
                     f"[{nom}]({url})" for nom, url in resultat["sources_urls"].items()

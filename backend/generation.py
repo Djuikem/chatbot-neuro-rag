@@ -1,6 +1,7 @@
 """
-Génération de réponse : construction du prompt contraint (anti-hallucination,
-garde-fou éthique) et appel au LLM via l'API Groq.
+Génération de réponse : détection de salutations/urgence, construction des
+messages de conversation (avec mémoire des échanges précédents) et appel au
+LLM via l'API Groq.
 """
 
 import os
@@ -11,6 +12,36 @@ client_groq = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 MODELE_LLM = "openai/gpt-oss-120b"
 
+
+# --- Détection de salutations pures (bonjour, hello, salut...) ---
+
+MOTS_SALUTATION = {
+    "fr": ["bonjour", "bonsoir", "salut", "coucou", "hello", "bjr", "yo"],
+    "en": ["hello", "hi", "hey", "good morning", "good evening", "yo"],
+}
+
+MESSAGES_ACCUEIL = {
+    "fr": "Bonjour et bienvenue ! 😊 Je suis un assistant d'information santé spécialisé en neurologie. Pose-moi une question sur une pathologie comme la migraine, l'épilepsie, la maladie de Parkinson, Alzheimer, la sclérose en plaques, et bien d'autres — je ferai de mon mieux pour t'aider.",
+    "en": "Hello and welcome! 😊 I'm a health information assistant specialized in neurology. Ask me a question about a condition like migraine, epilepsy, Parkinson's disease, Alzheimer's, multiple sclerosis, and more — I'll do my best to help.",
+}
+
+
+def detecter_salutation(question, langue="fr"):
+    """Détecte si le message est une salutation PURE (rien d'autre à côté),
+    ex: 'bonjour', 'hello !', 'salut ça va ?' — pour répondre chaleureusement
+    sans passer par le retrieval/LLM (inutile pour une simple salutation)."""
+    texte = question.lower().strip()
+    texte = re.sub(r"[!?.,;:]+$", "", texte).strip()
+    mots_cles = MOTS_SALUTATION.get(langue, MOTS_SALUTATION["fr"])
+
+    # Salutation pure : le message commence par un mot de salutation ET reste très court
+    # (moins de 5 mots), pour ne pas déclencher ce cas sur "bonjour, quels sont les
+    # symptômes de la migraine ?" qui contient une vraie question à traiter normalement.
+    commence_par_salutation = any(texte.startswith(mot) for mot in mots_cles)
+    return commence_par_salutation and len(texte.split()) <= 5
+
+
+# --- Détection d'urgence (situation vécue en direct) ---
 
 MOTS_CLES_URGENCE = {
     "fr": [
@@ -35,53 +66,87 @@ def detecter_urgence(question, langue="fr"):
     return any(mot in question_lower for mot in mots_cles)
 
 
+# --- Instructions système (persona + règles) ---
+
 INSTRUCTIONS_LANGUE = {
     "fr": {
         "consigne_langue": "Réponds en français.",
-        "consigne_base": "Tu es un assistant d'information santé spécialisé en neurologie. Réponds à la question UNIQUEMENT à partir des sources fournies ci-dessous. Si l'information n'est pas présente dans les sources, dis clairement que tu ne sais pas plutôt que d'inventer une réponse.\n\nCite le nom de la pathologie directement dans ta phrase (ex: \"la migraine peut être traitée par...\"). N'utilise PAS de notation du type [Source 1] ou (Source 2) — les liens vers les sources seront affichés séparément après ta réponse.\n\nPrécise systématiquement à la fin de ta réponse que ceci est une information générale et ne remplace pas l'avis d'un professionnel de santé.",
+        "consigne_base": (
+            "Tu es un assistant d'information santé spécialisé en neurologie, "
+            "avec un ton chaleureux et accueillant. Réponds à la question "
+            "UNIQUEMENT à partir des sources fournies dans le message utilisateur. "
+            "Si l'information n'est pas présente dans les sources, dis clairement "
+            "que tu ne sais pas plutôt que d'inventer une réponse.\n\n"
+            "Cite le nom de la pathologie directement dans ta phrase "
+            "(ex: \"la migraine peut être traitée par...\"). N'utilise PAS de "
+            "notation du type [Source 1] ou (Source 2) — les liens vers les "
+            "sources seront affichés séparément après ta réponse.\n\n"
+            "Tu peux t'appuyer sur les échanges précédents de la conversation "
+            "pour comprendre le contexte d'une question de suivi (ex: si "
+            "l'utilisateur a demandé les symptômes de la migraine puis demande "
+            "'et les traitements ?', comprends qu'il parle toujours de la migraine).\n\n"
+            "Précise systématiquement à la fin de ta réponse que ceci est une "
+            "information générale et ne remplace pas l'avis d'un professionnel de santé."
+        ),
         "consigne_urgence": "\n\nATTENTION : cette question semble décrire une situation vécue EN CE MOMENT, pas juste une question générale. Commence ta réponse par UNE SEULE PHRASE COURTE indiquant dans quels cas appeler immédiatement les services d'urgence de son pays (ex: crise qui dure plus de 5 minutes, personne ne reprend pas connaissance, blessure). Ensuite seulement, donne les gestes de premiers secours détaillés.",
         "sources_label": "SOURCES",
         "question_label": "QUESTION",
-        "reponse_label": "RÉPONSE",
     },
     "en": {
-        "consigne_langue": "Answer in English, even though the sources below are in French — translate the relevant information yourself.",
-        "consigne_base": "You are a health information assistant specialized in neurology. Answer the question ONLY based on the sources provided below. If the information is not present in the sources, clearly say you don't know rather than inventing an answer.\n\nCite the condition's name directly in your sentence (e.g. \"migraine can be treated with...\"). Do NOT use notation like [Source 1] or (Source 2) — links to the sources will be displayed separately after your answer.\n\nAlways state at the end of your answer that this is general information and does not replace the advice of a healthcare professional.",
+        "consigne_langue": "Answer in English, even though the sources may be in French — translate the relevant information yourself.",
+        "consigne_base": (
+            "You are a health information assistant specialized in neurology, "
+            "with a warm and welcoming tone. Answer the question ONLY based on "
+            "the sources provided in the user message. If the information is "
+            "not present in the sources, clearly say you don't know rather than "
+            "inventing an answer.\n\n"
+            "Cite the condition's name directly in your sentence (e.g. "
+            "\"migraine can be treated with...\"). Do NOT use notation like "
+            "[Source 1] or (Source 2) — links to the sources will be displayed "
+            "separately after your answer.\n\n"
+            "You can rely on the previous turns of the conversation to "
+            "understand follow-up questions (e.g. if the user asked about "
+            "migraine symptoms and then asks 'and treatments?', understand "
+            "they're still talking about migraine).\n\n"
+            "Always state at the end of your answer that this is general "
+            "information and does not replace the advice of a healthcare professional."
+        ),
         "consigne_urgence": "\n\nWARNING: this question seems to describe a situation happening RIGHT NOW, not just a general question. Start your answer with ONE SHORT SENTENCE stating when to call local emergency services immediately (e.g. seizure lasting more than 5 minutes, person not regaining consciousness, injury). Only after that, give the detailed first-aid steps.",
         "sources_label": "SOURCES",
         "question_label": "QUESTION",
-        "reponse_label": "ANSWER",
     },
 }
 
 
-def construire_prompt(question, chunks_retrouves, langue="fr", urgence=False):
-    """Assemble le contexte récupéré et la question dans un prompt structuré,
-    en contraignant le LLM à ne répondre qu'à partir des sources fournies,
-    et dans la langue demandée (les sources elles-mêmes restent en français).
-    Si urgence=True, on demande au LLM de prioriser l'information critique
-    (quand appeler les secours) en tout début de réponse."""
+def construire_messages_chat(question, chunks_retrouves, historique, langue="fr", urgence=False):
+    """Construit la liste de messages (format chat multi-tours) envoyée au LLM :
+    1. Un message système avec les instructions et la persona
+    2. L'historique des échanges précédents (pour la mémoire conversationnelle)
+    3. Le tour actuel : les sources retrouvées + la question posée
+
+    historique : liste de dicts {"role": "user"|"assistant", "content": str},
+    dans l'ordre chronologique, SANS les liens de sources (juste le texte dit)."""
     textes = INSTRUCTIONS_LANGUE.get(langue, INSTRUCTIONS_LANGUE["fr"])
+
+    consigne_complete = textes["consigne_base"] + "\n\n" + textes["consigne_langue"]
+    if urgence:
+        consigne_complete += textes["consigne_urgence"]
+
+    messages = [{"role": "system", "content": consigne_complete}]
+
+    # On ajoute l'historique récent (déjà limité en amont par l'appelant)
+    for tour in historique:
+        messages.append({"role": tour["role"], "content": tour["content"]})
 
     contexte = "\n\n".join([
         f"[Source {i+1} — {c['pathologie']} / {c['section']}]\n{c['texte']}"
         for i, c in enumerate(chunks_retrouves)
     ])
 
-    consigne_complete = textes["consigne_base"]
-    if urgence:
-        consigne_complete += textes["consigne_urgence"]
+    tour_actuel = f"{textes['sources_label']}:\n{contexte}\n\n{textes['question_label']}: {question}"
+    messages.append({"role": "user", "content": tour_actuel})
 
-    return f"""{consigne_complete}
-
-{textes['consigne_langue']}
-
-{textes['sources_label']}:
-{contexte}
-
-{textes['question_label']}: {question}
-
-{textes['reponse_label']}:"""
+    return messages
 
 
 def nettoyer_citations_residuelles(texte_reponse):
@@ -94,9 +159,7 @@ def nettoyer_citations_residuelles(texte_reponse):
     pattern = r"[\[\(]\s*Sources?\s*\d+(?:\s*(?:,|et|\/)\s*\d+)*\s*[\]\)]"
     texte_nettoye = re.sub(pattern, "", texte_reponse, flags=re.IGNORECASE)
 
-    # Nettoyage des espaces/ponctuation orphelins laissés par la suppression
     texte_nettoye = re.sub(r"\s+([.,;:])", r"\1", texte_nettoye)
-    # Fusionne une virgule suivie d'une autre ponctuation (ex: "repos,." -> "repos.")
     texte_nettoye = re.sub(r",\s*([.,;:])", r"\1", texte_nettoye)
     texte_nettoye = re.sub(r"[ \t]{2,}", " ", texte_nettoye)
 
@@ -109,16 +172,50 @@ MESSAGES_HORS_SUJET = {
 }
 
 
-def generer_reponse(question, pipeline, k=5, max_tokens=800, temperature=0.3, langue="fr"):
-    """Pipeline complet : retrieval + génération. Retourne la réponse texte
-    et la liste des pathologies utilisées comme sources.
-    langue : "fr" ou "en" — la recherche (retrieval) reste en français,
-    seule la réponse générée change de langue.
-    Si aucun chunk pertinent n'est trouvé (question hors-sujet), on renvoie
-    directement un message adapté SANS appeler le LLM et SANS disclaimer
-    médical (qui n'aurait pas de sens pour une question hors santé)."""
-    chunks_retrouves = pipeline.rechercher(question, k=k)
+def _construire_requete_retrieval(question, historique):
+    """Pour les questions de suivi très courtes/ambiguës (ex: 'et les traitements ?'),
+    on enrichit la requête envoyée au retrieval avec la dernière question de
+    l'utilisateur, pour aider à retrouver la bonne pathologie malgré l'absence
+    de mots-clés explicites dans la nouvelle question."""
+    if len(question.split()) > 6 or not historique:
+        return question
 
+    derniere_question_utilisateur = None
+    for tour in reversed(historique):
+        if tour["role"] == "user":
+            derniere_question_utilisateur = tour["content"]
+            break
+
+    if derniere_question_utilisateur:
+        return f"{derniere_question_utilisateur} {question}"
+    return question
+
+
+def generer_reponse(question, pipeline, historique=None, k=5, max_tokens=800,
+                     temperature=0.3, langue="fr"):
+    """Pipeline complet : retrieval + génération, avec mémoire conversationnelle.
+
+    historique : liste de dicts {"role": "user"|"assistant", "content": str}
+    représentant les échanges précédents DE LA CONVERSATION ACTUELLE (déjà
+    filtrés par langue et nettoyés des liens de sources par l'appelant).
+    Sert à la fois à donner de la mémoire au LLM et à enrichir le retrieval
+    pour les questions de suivi courtes.
+    """
+    historique = historique or []
+
+    # Cas 1 : salutation pure -> réponse chaleureuse directe, sans retrieval/LLM
+    if detecter_salutation(question, langue=langue):
+        return {
+            "reponse": MESSAGES_ACCUEIL.get(langue, MESSAGES_ACCUEIL["fr"]),
+            "pathologies": [],
+            "sources_urls": {},
+            "sources_detaillees": []
+        }
+
+    requete_retrieval = _construire_requete_retrieval(question, historique)
+    chunks_retrouves = pipeline.rechercher(requete_retrieval, k=k)
+
+    # Cas 2 : rien de pertinent trouvé -> message hors-sujet direct
     if not chunks_retrouves:
         return {
             "reponse": MESSAGES_HORS_SUJET.get(langue, MESSAGES_HORS_SUJET["fr"]),
@@ -128,11 +225,18 @@ def generer_reponse(question, pipeline, k=5, max_tokens=800, temperature=0.3, la
         }
 
     urgence = detecter_urgence(question, langue=langue)
-    prompt = construire_prompt(question, chunks_retrouves, langue=langue, urgence=urgence)
+
+    # On ne garde que les derniers échanges pour ne pas alourdir le prompt
+    # indéfiniment au fil d'une longue conversation (6 derniers messages = 3 tours)
+    historique_recent = historique[-6:]
+
+    messages = construire_messages_chat(
+        question, chunks_retrouves, historique_recent, langue=langue, urgence=urgence
+    )
 
     reponse = client_groq.chat.completions.create(
         model=MODELE_LLM,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         max_tokens=max_tokens,
         temperature=temperature
     )

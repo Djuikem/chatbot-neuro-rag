@@ -237,13 +237,49 @@ MESSAGES_HORS_SUJET = {
 }
 
 
-def _construire_requete_retrieval(question, historique):
-    """Pour les questions de suivi très courtes/ambiguës (ex: 'et les traitements ?'),
-    on enrichit la requête envoyée au retrieval avec la dernière question de
-    l'utilisateur, pour aider à retrouver la bonne pathologie malgré l'absence
-    de mots-clés explicites dans la nouvelle question."""
-    if len(question.split()) > 6 or not historique:
+MOTS_REFERENCE = {
+    "fr": [
+        "cette maladie", "cette pathologie", "ce médicament", "ces médicaments",
+        "cette condition", "cette affection", "l'avoir", "en avoir",
+        "ces derniers", "ceux-ci", "celle-ci", "celui-ci",
+    ],
+    "en": [
+        "this disease", "this condition", "this medication", "these medications",
+        "these drugs", "this drug", "have it", "get it",
+    ],
+}
+
+
+def contient_mot_de_reference(question, langue="fr"):
+    """Détecte si la question contient une expression qui renvoie implicitement
+    à un sujet déjà évoqué ('cette maladie', 'ces médicaments'...), PEU IMPORTE
+    la longueur de la phrase — contrairement à un simple seuil de mots, ce
+    signal capture aussi les questions longues qui restent des questions de
+    suivi (ex: 'Concernant cette maladie, est-ce que les bébés peuvent
+    l'avoir ?')."""
+    texte = question.lower()
+    mots = MOTS_REFERENCE.get(langue, MOTS_REFERENCE["fr"])
+    return any(mot in texte for mot in mots)
+
+
+def _construire_requete_retrieval(question, historique, pathologies_precedentes=None):
+    """Enrichit la requête envoyée au retrieval pour les questions de suivi :
+    - si la question est courte (<=6 mots) OU contient un mot de référence
+      ('cette maladie', 'ces médicaments'...), on ancre explicitement la
+      recherche sur le nom de la/des pathologie(s) discutée(s) juste avant.
+    Le nom exact de la pathologie (ex: 'Migraine') apparaît tel quel dans le
+    texte indexé de chaque chunk ('Migraine - Traitement: ...'), donc
+    l'ajouter à la requête pousse fortement la recherche vers les bons chunks,
+    plus efficacement qu'ancrer seulement sur la question précédente en toutes lettres."""
+    est_suivi_court = len(question.split()) <= 6
+    est_reference = contient_mot_de_reference(question, langue="fr") or contient_mot_de_reference(question, langue="en")
+
+    if not (est_suivi_court or est_reference) or not historique:
         return question
+
+    ancre = ""
+    if pathologies_precedentes:
+        ancre = " ".join(pathologies_precedentes) + " "
 
     derniere_question_utilisateur = None
     for tour in reversed(historique):
@@ -252,19 +288,20 @@ def _construire_requete_retrieval(question, historique):
             break
 
     if derniere_question_utilisateur:
-        return f"{derniere_question_utilisateur} {question}"
-    return question
+        return f"{ancre}{derniere_question_utilisateur} {question}".strip()
+    return f"{ancre}{question}".strip()
 
 
-def generer_reponse(question, pipeline, historique=None, k=5, max_tokens=800,
-                     temperature=0.3, langue="fr"):
+def generer_reponse(question, pipeline, historique=None, pathologies_precedentes=None,
+                     k=5, max_tokens=800, temperature=0.3, langue="fr"):
     """Pipeline complet : retrieval + génération, avec mémoire conversationnelle.
 
     historique : liste de dicts {"role": "user"|"assistant", "content": str}
     représentant les échanges précédents DE LA CONVERSATION ACTUELLE (déjà
     filtrés par langue et nettoyés des liens de sources par l'appelant).
-    Sert à la fois à donner de la mémoire au LLM et à enrichir le retrieval
-    pour les questions de suivi courtes.
+    pathologies_precedentes : liste des noms de pathologies utilisées comme
+    sources au tour précédent (ex: ["Migraine"]) — sert d'ancre forte pour le
+    retrieval sur les questions de suivi ambiguës.
     """
     historique = historique or []
 
@@ -277,7 +314,7 @@ def generer_reponse(question, pipeline, historique=None, k=5, max_tokens=800,
             "sources_detaillees": []
         }
 
-    requete_retrieval = _construire_requete_retrieval(question, historique)
+    requete_retrieval = _construire_requete_retrieval(question, historique, pathologies_precedentes)
     chunks_retrouves = pipeline.rechercher(requete_retrieval, k=k)
 
     # Cas 2 : rien de pertinent trouvé -> message hors-sujet direct

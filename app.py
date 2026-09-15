@@ -103,6 +103,16 @@ def extraire_contenu_brut(texte_affiche):
     return re.split(r"\n\n---\n📚", texte_affiche)[0].strip()
 
 
+def derniere_pathologies_connues(messages):
+    """Cherche, en remontant l'historique affiché, le dernier message assistant
+    qui a effectivement utilisé des sources, et retourne ses pathologies.
+    Sert d'ancre pour le retrieval sur une question de suivi ambiguë."""
+    for msg in reversed(messages):
+        if msg["role"] == "assistant" and msg.get("pathologies"):
+            return msg["pathologies"]
+    return []
+
+
 if question := st.chat_input(textes["placeholder"]):
     st.session_state.messages.append({
         "role": "user", "content": question, "langue": langue_choisie
@@ -112,16 +122,19 @@ if question := st.chat_input(textes["placeholder"]):
 
     with st.chat_message("assistant"):
         with st.spinner(textes["spinner"]):
-            # On construit l'historique (mémoire conversationnelle) à partir
-            # des messages déjà affichés dans cette langue, nettoyés des liens
-            # de sources, et sans le message qu'on vient d'ajouter.
+            # Historique (mémoire conversationnelle) nettoyé des liens de sources,
+            # et pathologies du dernier tour pertinent (ancre pour le retrieval).
             historique_pour_llm = [
                 {"role": m["role"], "content": extraire_contenu_brut(m["content"])}
                 for m in messages_a_afficher
             ]
+            pathologies_precedentes = derniere_pathologies_connues(messages_a_afficher)
 
             resultat = generer_reponse(
-                question, pipeline, historique=historique_pour_llm, langue=langue_choisie
+                question, pipeline,
+                historique=historique_pour_llm,
+                pathologies_precedentes=pathologies_precedentes,
+                langue=langue_choisie
             )
 
             texte_final = resultat["reponse"]
@@ -135,5 +148,6 @@ if question := st.chat_input(textes["placeholder"]):
             st.markdown(texte_final)
 
     st.session_state.messages.append({
-        "role": "assistant", "content": texte_final, "langue": langue_choisie
+        "role": "assistant", "content": texte_final, "langue": langue_choisie,
+        "pathologies": resultat["pathologies"]
     })
